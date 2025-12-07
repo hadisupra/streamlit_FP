@@ -49,6 +49,9 @@ API_URL = os.getenv("API_URL", DEFAULT_API_URL).rstrip("/")
 DEFAULT_API_TIMEOUT = int(os.getenv("API_TIMEOUT", "30"))
 API_TIMEOUT = DEFAULT_API_TIMEOUT
 
+# Optional base URL to fetch missing CSVs on cloud deploys
+DATA_BASE_URL = os.getenv("DATA_BASE_URL", "").rstrip("/")
+
 print(f"QDRANT_URL in use: {QDRANT_URL}")
 
 # -- Qdrant connection check helper
@@ -99,6 +102,38 @@ else:
 base_dir = os.path.dirname(__file__)
 data_dir = os.path.join(base_dir, "data")
 
+# Validate required CSV files exist and surface clear info in the UI
+REQUIRED_CSVS = [
+    "olist_orders_dataset.csv",
+    "olist_order_items_dataset.csv",
+    "olist_products_dataset.csv",
+    "olist_customers_dataset.csv",
+    "olist_order_reviews_dataset.csv",
+]
+
+missing_csvs = [f for f in REQUIRED_CSVS if not os.path.isfile(os.path.join(data_dir, f))]
+
+# Cloud-friendly fallback: try to download missing CSVs if DATA_BASE_URL is set
+def _download_missing_csvs():
+    downloaded = []
+    if not DATA_BASE_URL:
+        return downloaded
+    os.makedirs(data_dir, exist_ok=True)
+    for fname in list(missing_csvs):
+        try:
+            url = f"{DATA_BASE_URL}/{fname}"
+            resp = requests.get(url, timeout=30)
+            if resp.status_code == 200:
+                with open(os.path.join(data_dir, fname), "wb") as f:
+                    f.write(resp.content)
+                downloaded.append(fname)
+        except Exception as e:
+            logging.warning(f"Failed to download {fname} from {DATA_BASE_URL}: {e}")
+    # Refresh missing list after attempted downloads
+    missing_csvs[:] = [f for f in REQUIRED_CSVS if not os.path.isfile(os.path.join(data_dir, f))]
+    return downloaded
+
+
 # 9. Initialize Qdrant Vector Store
 collection_name = "olist_reviews"
 model_name = "text-embedding-3-small"
@@ -134,6 +169,17 @@ try:
         print(f"✅ Loaded existing collection: {collection_name}")
     else:
         print(f"\n🆕 Collection '{collection_name}' does not exist. Creating new collection with documents...")
+        if missing_csvs:
+            fetched = _download_missing_csvs()
+            if fetched:
+                print(f"📥 Downloaded CSVs: {', '.join(fetched)}")
+            if missing_csvs:
+                raise FileNotFoundError(
+                    "Missing required CSVs in data folder: "
+                    + ", ".join(missing_csvs)
+                    + f"\nExpected location: {data_dir}"
+                    + (f"\nTried downloading from {DATA_BASE_URL} but some files are still missing." if DATA_BASE_URL else "")
+                )
         # Build documents only when needed
         # Load CSVs, preprocess, and create chunks
         orders = pd.read_csv(os.path.join(data_dir, "olist_orders_dataset.csv"))
@@ -183,7 +229,7 @@ try:
                     metadata={
                         "order_id": str(row.get("order_id", "")),
                         "review_id": str(row.get("review_id", "")),
-                        "rating": row.get("review_score", 0),
+                        "rating": float(row.get("review_score", 0) or 0),
                         "product_id": str(row.get("product_id", "")),
                     },
                 )
@@ -359,7 +405,10 @@ def _lazy_load_reviews_df():
             df = df.rename(columns=lambda x: x.lower()).dropna(subset=["review_id"])
             reviews_df_min = df[["order_id", "review_score"]].copy()
         except Exception as e:
-            logging.error(f"Failed to load reviews CSV: {e}")
+            logging.error(
+                f"Failed to load reviews CSV: {e}. Expected at: "
+                f"{os.path.join(data_dir, 'olist_order_reviews_dataset.csv')}"
+            )
             reviews_df_min = pd.DataFrame(columns=["order_id", "review_score"])  # empty fallback
 
 def _lazy_load_items_df():
@@ -370,13 +419,67 @@ def _lazy_load_items_df():
             df = df.rename(columns=lambda x: x.lower()).dropna(subset=["order_id"])
             items_df_min = df[["order_id", "product_id"]].copy()
         except Exception as e:
-            logging.error(f"Failed to load items CSV: {e}")
+            logging.error(
+                f"Failed to load items CSV: {e}. Expected at: "
+                f"{os.path.join(data_dir, 'olist_order_items_dataset.csv')}"
+            )
             items_df_min = pd.DataFrame(columns=["order_id", "product_id"])  # empty fallback
 
 @tool
 def get_review_statistics(product_id: str = "") -> str:
     """Get review statistics overall or for a specific product_id without heavy ingestion."""
     try:
+        # Prefer Qdrant payloads if vector_store is ready, to avoid CSV dependency
+        if vector_store and QDRANT_URL:
+            try:
+                client_kwargs = {"url": QDRANT_URL, "timeout": 10}
+                if QDRANT_API_KEY and QDRANT_URL.lower().startswith("https"):
+                    client_kwargs["api_key"] = QDRANT_API_KEY
+                qc_stats = QdrantClient(**client_kwargs)
+                from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+                collected = []
+                next_offset = None
+                # Scroll through points and collect ratings from payload
+                # Limit batches to avoid memory pressure
+                while True:
+                    filt = None
+                    if product_id:
+                        # Only include points with matching product_id in payload
+                        filt = Filter(must=[FieldCondition(key="product_id", match=MatchValue(value=str(product_id)))])
+                    points, next_offset = qc_stats.scroll(
+                        collection_name=collection_name,
+                        with_payload=True,
+                        with_vectors=False,
+                        limit=1000,
+                        offset=next_offset,
+                        filter=filt,
+                    )
+                    for p in points:
+                        payload = getattr(p, "payload", {}) or {}
+                        rating = payload.get("rating")
+                        if rating is not None:
+                            try:
+                                collected.append(float(rating))
+                            except Exception:
+                                pass
+                    if not next_offset:
+                        break
+                if not collected:
+                    # Fallback to CSV path if no ratings in payload
+                    raise RuntimeError("No ratings in Qdrant payloads")
+                series = pd.Series(collected, dtype=float)
+                stats = (
+                    f"Review Statistics (Qdrant){' for product ' + str(product_id) if product_id else ''}:\n"
+                    f"- Total Reviews: {int(series.count())}\n"
+                    f"- Average Rating: {series.mean():.2f}\n"
+                    f"- Min Rating: {series.min()}\n"
+                    f"- Max Rating: {series.max()}"
+                )
+                return stats
+            except Exception:
+                # Fall back to CSV-based minimal loaders
+                pass
+
         _lazy_load_reviews_df()
         if reviews_df_min is None or reviews_df_min.empty:
             return "No reviews found."
@@ -468,6 +571,17 @@ with st.sidebar:
         st.success(f"Qdrant: Connected — {qdrant_status_msg}")
     else:
         st.error(f"Qdrant: Not connected — {qdrant_status_msg}")
+    st.divider()
+    st.subheader("Data Files")
+    st.text(f"Data folder: {data_dir}")
+    if missing_csvs:
+        st.error("Missing CSVs: " + ", ".join(missing_csvs))
+        if DATA_BASE_URL:
+            st.caption(f"Will try to fetch from {DATA_BASE_URL} during setup.")
+        else:
+            st.caption("Place the Olist CSVs in the data folder above or set DATA_BASE_URL.")
+    else:
+        st.success("All required CSVs found")
     st.divider()
     st.subheader("API")
     api_url_input = st.text_input("API URL", value=API_URL, help="FastAPI base URL")

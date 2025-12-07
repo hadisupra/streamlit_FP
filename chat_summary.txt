@@ -1,0 +1,29 @@
+Chat Summary (Dec 7, 2025)
+
+- Goal: Update local repo changes to GitHub.
+- Actions run:
+  - Checked repo status on branch `main`.
+  - Staged `streamlit_FP.py` and `.gitignore`.
+  - Committed with message: "Update streamlit_FP.py and add .gitignore".
+  - Pushed to `origin/main` successfully.
+- Confirmation: Remote updated (`main -> main`).
+
+Helpful Commands (Windows PowerShell):
+- Navigate & check:
+  Push-Location "c:\Users\user\Documents\GitHub\streamlit_FP"
+  git status
+  Pop-Location
+- Stage & commit:
+  Push-Location "c:\Users\user\Documents\GitHub\streamlit_FP"
+  git add streamlit_FP.py .gitignore
+  git commit -m "Update streamlit_FP.py and add .gitignore"
+  Pop-Location
+- Push:
+  Push-Location "c:\Users\user\Documents\GitHub\streamlit_FP"
+  git push origin main
+  Pop-Location
+
+Notes:
+- If prompted for auth, sign in via browser or use a PAT.
+- To amend the last commit: `git commit --amend` then `git push --force-with-lease`.
+- To create/push a new branch: `git checkout -b feature/foo` then `git push -u origin feature/foo`.
