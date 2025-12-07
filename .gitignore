@@ -1,0 +1,15 @@
+﻿# Secrets
+.env
+*.env
+.env.*
+**/secrets.*
+*.key
+*.pem
+*.pfx
+
+# Python
+__pycache__/
+*.pyc
+
+# Data: ignore the very large one flagged by GitHub
+data/olist_geolocation_dataset.csv

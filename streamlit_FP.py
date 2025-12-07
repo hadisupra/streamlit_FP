@@ -431,16 +431,10 @@ def render_agent_output(text: str):
 # Initialize the agent if API key is available
 review_agent = None
 if OPENAI_API_KEY and vector_store and llm is not None:
+    # Newer create_react_agent signature does not accept 'prompt'
     review_agent = create_react_agent(
         tools=[search_reviews, current_datetime, get_review_statistics, sql_query_tool_struct],
         model=llm,
-        prompt=SystemMessage(
-            content="""You are an expert customer review analyst. 
-Use the available tools to help users analyze and understand customer reviews effectively.
-Provide accurate, helpful, and engaging responses using the data from the tools.
-Use emojis appropriately to make the response more engaging.
-if any question related products use sql tool, like average total price.average rating, total sales.if any question realte to review products use review search tool."""
-        )
     )
     
     def get_chat_bot_response(input_text, chat_history):
@@ -448,8 +442,10 @@ if any question related products use sql tool, like average total price.average 
         try:
             if review_agent is None:
                 return "Agent not initialized"
+            # Prepend a system instruction to guide the agent
+            sys_msg = SystemMessage(content="You analyze customer reviews and use provided tools. If the question is about products/SQL, prefer the SQL tool; for review insights, prefer the review search tool.")
             result = review_agent.invoke(
-                {"messages": chat_history + [HumanMessage(content=input_text)]}
+                {"messages": [sys_msg] + chat_history + [HumanMessage(content=input_text)]}
             )
             return result["messages"][-1].content
         except Exception as e:
