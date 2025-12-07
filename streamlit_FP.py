@@ -365,7 +365,7 @@ if OPENAI_API_KEY and vector_store and llm is not None:
             if review_agent is None:
                 return "Agent not initialized"
             # Prepend a system instruction to guide the agent
-            sys_msg = SystemMessage(content="You analyze customer reviews and use provided tools. If the question is about products/SQL, prefer the SQL tool; for review insights, prefer the review search tool.")
+            sys_msg = SystemMessage(content="You analyze customer reviews and use provided tools. you are warm agent.use emoji if needed. If the question is about products/SQL, prefer the SQL tool; for review insights, prefer the review search tool.")
             result = review_agent.invoke(
                 {"messages": [sys_msg] + chat_history + [HumanMessage(content=input_text)]}
             )
