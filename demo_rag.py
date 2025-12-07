@@ -67,7 +67,7 @@ def demo_sentiment_analysis():
     embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
     
     agent = create_rag_agent(
-        db_path="olist.db",
+        db_path="olist_small.db",
         collection_name="olist_reviews",
         qdrant_url=os.getenv("QDRANT_URL"),
         qdrant_api_key=os.getenv("QDRANT_API_KEY"),
@@ -94,7 +94,7 @@ def demo_category_analysis():
     embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
     
     agent = create_rag_agent(
-        db_path="olist.db",
+        db_path="olist_small.db",
         collection_name="olist_reviews",
         qdrant_url=os.getenv("QDRANT_URL"),
         qdrant_api_key=os.getenv("QDRANT_API_KEY"),
@@ -177,8 +177,8 @@ def main():
         print("⚠️  WARNING: QDRANT_URL not set")
         print("Some demos will be skipped")
     
-    if not os.path.exists("olist.db"):
-        print("⚠️  WARNING: olist.db not found")
+    if not os.path.exists("olist_small.db"):
+        print("⚠️  WARNING: olist_small.db not found")
         print("Some demos will be skipped")
     
     print("\n" + "="*70)
@@ -200,7 +200,7 @@ def main():
             if i == 5:  # Comparison demo doesn't need actual queries
                 demo_func()
             else:
-                if os.getenv("QDRANT_URL") and os.path.exists("olist.db"):
+                if os.getenv("QDRANT_URL") and os.path.exists("olist_small.db"):
                     demo_func()
                 else:
                     print_section(f"DEMO {i}: {name}")

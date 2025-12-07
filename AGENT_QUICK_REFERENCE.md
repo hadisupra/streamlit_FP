@@ -64,7 +64,7 @@ Question Type?
 ```python
 from agents import create_sqlite_agent
 
-agent = create_sqlite_agent("olist.db")
+agent = create_sqlite_agent("olist_small.db")
 result = agent.query("Top 10 products by price")
 print(result["answer"])
 ```
@@ -87,7 +87,7 @@ print(result["answer"])
 from agents import create_rag_agent
 
 agent = create_rag_agent(
-    db_path="olist.db",
+    db_path="olist_small.db",
     collection_name="olist_reviews",
     qdrant_url=QDRANT_URL,
     qdrant_api_key=QDRANT_API_KEY

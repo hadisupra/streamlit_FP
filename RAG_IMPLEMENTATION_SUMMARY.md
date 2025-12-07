@@ -106,7 +106,7 @@ llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
 
 rag_agent = create_rag_agent(
-    db_path="olist.db",
+    db_path="olist_small.db",
     collection_name="olist_reviews",
     qdrant_url=os.getenv("QDRANT_URL"),
     qdrant_api_key=os.getenv("QDRANT_API_KEY"),

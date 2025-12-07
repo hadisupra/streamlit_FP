@@ -18,7 +18,7 @@ def test_sqlite_agent():
     
     # Initialize agent
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-    agent = create_sqlite_agent(db_path="olist.db", llm=llm)
+    agent = create_sqlite_agent(db_path="olist_small.db", llm=llm)
     
     # Test queries
     questions = [
@@ -87,7 +87,7 @@ def test_rag_agent():
     collection_name = os.getenv("QDRANT_COLLECTION", "olist_reviews")
     
     agent = create_rag_agent(
-        db_path="olist.db",
+        db_path="olist_small.db",
         collection_name=collection_name,
         qdrant_url=qdrant_url,
         qdrant_api_key=qdrant_api_key,
@@ -138,8 +138,8 @@ if __name__ == "__main__":
     try:
         if not os.getenv("QDRANT_URL"):
             print("\nSkipping RAG agent test - QDRANT_URL not set")
-        elif not os.path.exists("olist.db"):
-            print("\nSkipping RAG agent test - olist.db not found")
+        elif not os.path.exists("olist_small.db"):
+            print("\nSkipping RAG agent test - olist_small.db not found")
         else:
             test_rag_agent()
     except Exception as e:

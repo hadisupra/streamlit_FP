@@ -88,7 +88,7 @@ with st.sidebar:
         
         # SQLite agent configuration
         with st.expander("SQLite Agent Config"):
-            db_path = st.text_input("Database Path", value="olist.db")
+            db_path = st.text_input("Database Path", value="olist_small.db")
             if st.button("Initialize SQLite Agent"):
                 try:
                     openai_api_key = os.getenv("OPENAI_API_KEY")
@@ -136,7 +136,7 @@ with st.sidebar:
         if use_rag:
             st.info("🔄 RAG agent combines both SQLite and Qdrant for comprehensive answers")
             with st.expander("RAG Agent Config"):
-                rag_db_path = st.text_input("DB Path (RAG)", value="olist.db", key="rag_db")
+                rag_db_path = st.text_input("DB Path (RAG)", value="olist_small.db", key="rag_db")
                 rag_collection = st.text_input("Collection (RAG)", value="olist_reviews", key="rag_coll")
                 
                 if st.button("Initialize RAG Agent"):
