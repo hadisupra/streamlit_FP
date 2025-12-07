@@ -61,7 +61,7 @@ def check_qdrant_connection(url: Optional[str], api_key: Optional[str], timeout:
         return False, "QDRANT_URL is not set"
     try:
         # Do not send API key over insecure (http) connection. Only include api_key when URL is HTTPS.
-        client_kwargs = {"url": url, "timeout": timeout}
+        client_kwargs = {"url": url, "timeout": timeout, "check_compatibility": False}
         if api_key and url.lower().startswith("https"):
             client_kwargs["api_key"] = api_key
         else:
@@ -100,38 +100,8 @@ else:
     logging.error("OPENAI_API_KEY is not set. Embeddings and LLM will not be initialized.")
 
 base_dir = os.path.dirname(__file__)
-data_dir = os.path.join(base_dir, "data")
 
-# Validate required CSV files exist and surface clear info in the UI
-REQUIRED_CSVS = [
-    "olist_orders_dataset.csv",
-    "olist_order_items_dataset.csv",
-    "olist_products_dataset.csv",
-    "olist_customers_dataset.csv",
-    "olist_order_reviews_dataset.csv",
-]
-
-missing_csvs = [f for f in REQUIRED_CSVS if not os.path.isfile(os.path.join(data_dir, f))]
-
-# Cloud-friendly fallback: try to download missing CSVs if DATA_BASE_URL is set
-def _download_missing_csvs():
-    downloaded = []
-    if not DATA_BASE_URL:
-        return downloaded
-    os.makedirs(data_dir, exist_ok=True)
-    for fname in list(missing_csvs):
-        try:
-            url = f"{DATA_BASE_URL}/{fname}"
-            resp = requests.get(url, timeout=30)
-            if resp.status_code == 200:
-                with open(os.path.join(data_dir, fname), "wb") as f:
-                    f.write(resp.content)
-                downloaded.append(fname)
-        except Exception as e:
-            logging.warning(f"Failed to download {fname} from {DATA_BASE_URL}: {e}")
-    # Refresh missing list after attempted downloads
-    missing_csvs[:] = [f for f in REQUIRED_CSVS if not os.path.isfile(os.path.join(data_dir, f))]
-    return downloaded
+# CSV ingestion removed. App now relies solely on existing Qdrant collection.
 
 
 # 9. Initialize Qdrant Vector Store
@@ -149,7 +119,7 @@ try:
     
     # Check if collection already exists
     try:
-        client_kwargs = {"url": QDRANT_URL, "timeout": 5}
+        client_kwargs = {"url": QDRANT_URL, "timeout": 5, "check_compatibility": False}
         if QDRANT_API_KEY and QDRANT_URL and QDRANT_URL.lower().startswith("https"):
             client_kwargs["api_key"] = QDRANT_API_KEY
         qc = QdrantClient(**client_kwargs)
@@ -168,108 +138,9 @@ try:
         )
         print(f"✅ Loaded existing collection: {collection_name}")
     else:
-        print(f"\n🆕 Collection '{collection_name}' does not exist. Creating new collection with documents...")
-        if missing_csvs:
-            fetched = _download_missing_csvs()
-            if fetched:
-                print(f"📥 Downloaded CSVs: {', '.join(fetched)}")
-            if missing_csvs:
-                raise FileNotFoundError(
-                    "Missing required CSVs in data folder: "
-                    + ", ".join(missing_csvs)
-                    + f"\nExpected location: {data_dir}"
-                    + (f"\nTried downloading from {DATA_BASE_URL} but some files are still missing." if DATA_BASE_URL else "")
-                )
-        # Build documents only when needed
-        # Load CSVs, preprocess, and create chunks
-        orders = pd.read_csv(os.path.join(data_dir, "olist_orders_dataset.csv"))
-        items = pd.read_csv(os.path.join(data_dir, "olist_order_items_dataset.csv"))
-        products = pd.read_csv(os.path.join(data_dir, "olist_products_dataset.csv"))
-        customers = pd.read_csv(os.path.join(data_dir, "olist_customers_dataset.csv"))
-        reviews = pd.read_csv(os.path.join(data_dir, "olist_order_reviews_dataset.csv"))
-
-        orders = orders.rename(columns=lambda x: x.lower()).dropna(subset=["order_id"])
-        items = items.rename(columns=lambda x: x.lower()).dropna(subset=["order_id"])
-        products = products.rename(columns=lambda x: x.lower()).dropna(subset=["product_id"])
-        customers = customers.rename(columns=lambda x: x.lower()).dropna(subset=["customer_id"])
-        reviews = reviews.rename(columns=lambda x: x.lower()).dropna(subset=["review_id"])
-
-        df = (
-            orders.merge(items, on="order_id")
-            .merge(products, on="product_id")
-            .merge(customers, on="customer_id")
-            .merge(reviews, on="order_id", how="left")
-        )
-        df["review_comment_message"] = df["review_comment_message"].fillna("").str.lower()
-        df["review_comment_message"] = df["review_comment_message"].apply(
-            lambda x: re.sub(r"[^a-zA-ZÀ-ÿ\s]", "", x)
-        )
-        df["review_comment_message_en"] = df["review_comment_message"].fillna("")
-
-        sample_texts = df["review_comment_message_en"].head(3).tolist()
-        print(f"\n📋 Original Portuguese review texts (first 3):")
-        for i, text in enumerate(sample_texts, 1):
-            print(f"  [{i}] {text[:100] if text else '(empty)'}")
-        print(f"Total reviews: {len(df)}")
-        print(f"✅ Ready to process {len(df)} reviews")
-
-        data = df.copy()
-        print(f"Data shape: {data.shape}")
-        print(f"Data columns: {data.columns.tolist()}")
-        print(f"First few rows:\n{data.head()}")
-
-        documents = []
-        for index, row in data.iterrows():
-            try:
-                text_content = row.get("review_comment_message_en", "")
-                if not text_content:
-                    continue
-                doc = Document(
-                    page_content=text_content,
-                    metadata={
-                        "order_id": str(row.get("order_id", "")),
-                        "review_id": str(row.get("review_id", "")),
-                        "rating": float(row.get("review_score", 0) or 0),
-                        "product_id": str(row.get("product_id", "")),
-                    },
-                )
-                documents.append(doc)
-            except Exception as e:
-                print(f"Error processing row {index}: {e}")
-
-        print(f"Total documents created: {len(documents)}")
-        from langchain_text_splitters import CharacterTextSplitter
-        text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        chunked_documents = []
-        for doc in documents:
-            chunks = text_splitter.split_text(doc.page_content)
-            for chunk in chunks:
-                chunked_documents.append(
-                    Document(page_content=chunk, metadata=doc.metadata)
-                )
-        print(f"Total chunked documents: {len(chunked_documents)}")
-
-        # Only pass api_key if the URL uses HTTPS to avoid insecure API key transmission
-        qdrant_kwargs = {
-            "documents": chunked_documents,
-            "embedding": embeddings,
-            "collection_name": collection_name,
-            "url": QDRANT_URL,
-            "prefer_grpc": False,
-            "force_recreate": False,
-            "timeout": 60,
-        }
-        if QDRANT_API_KEY and QDRANT_URL and QDRANT_URL.lower().startswith("https"):
-            qdrant_kwargs["api_key"] = QDRANT_API_KEY
-        else:
-            if QDRANT_API_KEY:
-                logging.warning(
-                    "QDRANT_API_KEY is set but QDRANT_URL is not HTTPS. Not sending API key to avoid insecure usage."
-                )
-
-        vector_store = Qdrant.from_documents(**qdrant_kwargs)
-        print(
-            f"✅ Successfully stored {len(chunked_documents)} documents to Qdrant collection: {collection_name}"
+        # Do not index from CSV; require existing collection
+        raise RuntimeError(
+            f"Collection '{collection_name}' not found in Qdrant. Please create/populate it externally before using the app."
         )
     
     print(f"✅ Vector store ready for retrieval")
@@ -394,36 +265,7 @@ def search_reviews(query: str) -> str:
     except Exception as e:
         return f"Error searching reviews: {e}"
 
-reviews_df_min = None
-items_df_min = None
-
-def _lazy_load_reviews_df():
-    global reviews_df_min
-    if reviews_df_min is None:
-        try:
-            df = pd.read_csv(os.path.join(data_dir, "olist_order_reviews_dataset.csv"))
-            df = df.rename(columns=lambda x: x.lower()).dropna(subset=["review_id"])
-            reviews_df_min = df[["order_id", "review_score"]].copy()
-        except Exception as e:
-            logging.error(
-                f"Failed to load reviews CSV: {e}. Expected at: "
-                f"{os.path.join(data_dir, 'olist_order_reviews_dataset.csv')}"
-            )
-            reviews_df_min = pd.DataFrame(columns=["order_id", "review_score"])  # empty fallback
-
-def _lazy_load_items_df():
-    global items_df_min
-    if items_df_min is None:
-        try:
-            df = pd.read_csv(os.path.join(data_dir, "olist_order_items_dataset.csv"))
-            df = df.rename(columns=lambda x: x.lower()).dropna(subset=["order_id"])
-            items_df_min = df[["order_id", "product_id"]].copy()
-        except Exception as e:
-            logging.error(
-                f"Failed to load items CSV: {e}. Expected at: "
-                f"{os.path.join(data_dir, 'olist_order_items_dataset.csv')}"
-            )
-            items_df_min = pd.DataFrame(columns=["order_id", "product_id"])  # empty fallback
+# Remove CSV fallbacks; rely solely on Qdrant payloads
 
 @tool
 def get_review_statistics(product_id: str = "") -> str:
@@ -480,30 +322,7 @@ def get_review_statistics(product_id: str = "") -> str:
                 # Fall back to CSV-based minimal loaders
                 pass
 
-        _lazy_load_reviews_df()
-        if reviews_df_min is None or reviews_df_min.empty:
-            return "No reviews found."
-
-        if product_id:
-            _lazy_load_items_df()
-            if items_df_min is None or items_df_min.empty:
-                return "Unable to load item mappings for product stats."
-            merged = pd.merge(reviews_df_min, items_df_min, on="order_id", how="inner")
-            filtered = merged[merged["product_id"] == product_id]
-            if filtered.empty:
-                return "No reviews found for that product."
-            series = filtered["review_score"].astype(float)
-        else:
-            series = reviews_df_min["review_score"].astype(float)
-
-        stats = (
-            f"Review Statistics:\n"
-            f"- Total Reviews: {int(series.count())}\n"
-            f"- Average Rating: {series.mean():.2f}\n"
-            f"- Min Rating: {series.min()}\n"
-            f"- Max Rating: {series.max()}"
-        )
-        return stats
+        return "No ratings available in Qdrant payloads to compute statistics."
     except Exception as e:
         return f"Error getting statistics: {e}"
 
@@ -572,16 +391,15 @@ with st.sidebar:
     else:
         st.error(f"Qdrant: Not connected — {qdrant_status_msg}")
     st.divider()
-    st.subheader("Data Files")
-    st.text(f"Data folder: {data_dir}")
-    if missing_csvs:
-        st.error("Missing CSVs: " + ", ".join(missing_csvs))
-        if DATA_BASE_URL:
-            st.caption(f"Will try to fetch from {DATA_BASE_URL} during setup.")
-        else:
-            st.caption("Place the Olist CSVs in the data folder above or set DATA_BASE_URL.")
-    else:
-        st.success("All required CSVs found")
+    # CSV ingestion removed; data files section omitted
+    st.subheader("Qdrant Collection")
+    st.text(f"Collection: {collection_name}")
+    st.caption("App uses existing Qdrant data only; no local CSVs.")
+    # Surface missing keys to help users configure env
+    if not OPENAI_API_KEY:
+        st.error("Missing OPENAI_API_KEY: set it in environment/secrets.")
+    if (QDRANT_URL or "").lower().startswith("https") and not QDRANT_API_KEY:
+        st.error("Missing QDRANT_API_KEY for HTTPS Qdrant URL.")
     st.divider()
     st.subheader("API")
     api_url_input = st.text_input("API URL", value=API_URL, help="FastAPI base URL")
