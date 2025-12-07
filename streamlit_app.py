@@ -11,7 +11,7 @@ import requests
 import streamlit as st
 
 # Configuration - Set your API base URL (no trailing slash)
-DEFAULT_API_URL = "https://llm-agent-api-zgcbggs4ca-uc.a.run.app"
+DEFAULT_API_URL = "https://llm-agent-api-447949002484.us-central1.run.app"
 API_URL = os.getenv("API_URL", DEFAULT_API_URL).rstrip("/")
 
 # Page config
