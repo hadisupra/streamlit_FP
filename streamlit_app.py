@@ -1,0 +1,326 @@
+"""
+Streamlit App for LLM Agent
+Connects to FastAPI backend (local or GCP Cloud Run)
+"""
+
+import os
+import json
+from datetime import datetime
+
+import requests
+import streamlit as st
+
+# Configuration - Set your API base URL (no trailing slash)
+DEFAULT_API_URL = "https://llm-agent-api-zgcbggs4ca-uc.a.run.app"
+API_URL = os.getenv("API_URL", DEFAULT_API_URL).rstrip("/")
+
+# Page config
+st.set_page_config(
+    page_title="Olist LLM Agent Chat",
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# Initialize session state
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "session_id" not in st.session_state:
+    st.session_state.session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+# Sidebar
+with st.sidebar:
+    st.title("⚙️ Settings")
+
+    api_url_input = st.text_input(
+        "API URL",
+        value=API_URL,
+        help="Your FastAPI backend URL (e.g., http://localhost:8080 or Cloud Run URL)",
+    )
+    if api_url_input:
+        API_URL = api_url_input.rstrip("/")
+
+    if st.button("🔌 Test Connection"):
+        try:
+            response = requests.get(f"{API_URL}/health", timeout=5)
+            if response.status_code == 200:
+                st.success("✅ Connected to API!")
+                st.json(response.json())
+            else:
+                st.error(f"❌ API returned status {response.status_code}")
+        except requests.exceptions.RequestException as e:
+            st.error(f"❌ Connection failed: {str(e)}")
+
+    st.divider()
+
+    st.subheader("📊 Session Info")
+    st.text(f"Session ID: {st.session_state.session_id}")
+    st.text(f"Messages: {len(st.session_state.messages)}")
+
+    if st.button("🗑️ Clear Chat"):
+        st.session_state.messages = []
+        st.rerun()
+
+    st.divider()
+    with st.expander("📡 Available Endpoints"):
+        st.markdown(
+            """
+            - `/health` - Health check
+            - `/sqlite?q=...` - SQL queries over products/orders (GET)
+            - `/qdrant/search?q=...` - Vector search over reviews (GET)
+            - `/reviews/ask?q=...` - Reviews agent answer (GET)
+            - `/chat?message=...` - General chat (POST)
+            """
+        )
+
+# Main content and diagram
+st.title("🤖 LLM Agent Chat Interface")
+st.markdown( """
+    This interface allows you to interact with the LLM Agent backend.)
+                """)
+# st.title("LLM Agent Chat Workflow")
+
+# mermaid_code = """
+# flowchart TD
+#     A[User Query (Natural Language)] --> B[FastAPI + LLM]
+#     B --> C[Route Selector]
+#     C --> D1[/sqlite → SQL over products/]
+#     C --> D2[/qdrant/search → Vector search/]
+#     C --> D3[/reviews/ask → Review agent/]
+#     D1 --> E[SQLite tables]
+#     D2 --> E
+#     D3 --> E
+#     E --> F[Response Assembly]
+#     F --> G[Chat UI Output]
+# """
+
+# st.markdown(
+#     f"""
+#     <div class="mermaid">
+#     {mermaid_code}
+#     </div>
+#     <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+#     <script>mermaid.initialize({{startOnLoad:true}});</script>
+#     """,
+#     unsafe_allow_html=True,
+# )
+
+# Display chat history
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# Routing keyword heuristics
+sql_keywords = [
+    "product",
+    "products",
+    "price",
+    "category",
+    "seller",
+    "sellers",
+    "order",
+    "orders",
+    "sqlite",
+    "sql",
+    "table",
+    "product_id",
+    "seller_id",
+    "payment",
+    "freight",
+]
+review_keywords = [
+    "review",
+    "reviews",
+    "rating",
+    "comment",
+    "feedback",
+    "delivery",
+    "late",
+    "customer",
+    "complaint",
+    "satisfaction",
+    "positivo",
+    "negativo",
+]
+
+# Chat input and handling
+if prompt := st.chat_input("Ask a question about your data..."):
+    text = prompt.lower()
+    route = "chat"
+    if any(k in text for k in sql_keywords):
+        route = "sqlite"
+    elif any(k in text for k in review_keywords):
+        route = "qdrant"
+
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            try:
+                if route == "sqlite":
+                    resp = requests.get(f"{API_URL}/sqlite", params={"q": prompt}, timeout=60)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        sql_text = data.get("sql", "")
+                        if sql_text:
+                            st.code(sql_text, language="sql")
+                        rows = data.get("rows", [])
+                        if rows:
+                            st.subheader("SQL Result (All Rows)")
+                            st.dataframe(rows)
+                        md = data.get("result")
+                        if md:
+                            st.markdown(md)
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": "Displayed SQL results.",
+                            "metadata": {"route": "sqlite", "rows": len(rows)},
+                        })
+                    else:
+                        st.error(f"Error: API returned status {resp.status_code}")
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": f"Error {resp.status_code}",
+                            "metadata": None,
+                        })
+
+                elif route == "qdrant":
+                    # Try reviews agent first, then vector search, then legacy endpoint
+                    resp = requests.get(f"{API_URL}/reviews/ask", params={"q": prompt}, timeout=60)
+                    if resp.status_code == 404:
+                        resp = requests.get(
+                            f"{API_URL}/qdrant/search", params={"q": prompt, "k": 5}, timeout=60
+                        )
+                    if resp.status_code == 404:
+                        resp = requests.get(f"{API_URL}/qdrant", timeout=60)
+
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if isinstance(data, dict) and "answer" in data and "question" in data:
+                            # /reviews/ask shape
+                            answer = data.get("answer", "")
+                            st.markdown(answer)
+                            st.subheader("Raw JSON")
+                            st.json(data)
+                            st.session_state.messages.append({
+                                "role": "assistant",
+                                "content": answer,
+                                "metadata": {"route": "reviews/ask"},
+                            })
+                        else:
+                            # /qdrant/search shape or legacy
+                            results = data.get("results") if isinstance(data, dict) else None
+                            if isinstance(results, list):
+                                if not results:
+                                    answer = "No relevant reviews found."
+                                else:
+                                    formatted = []
+                                    # Support both old shape (text+metadata) and new shape (score+id+payload)
+                                    for i, d in enumerate(results, 1):
+                                        payload = d.get("payload") if "payload" in d else d.get("metadata", {})
+                                        txt = d.get("text") if "text" in d else (
+                                            payload.get("review_comment_message") or payload.get("text") or ""
+                                        )
+                                        score = d.get("score") if "score" in d else payload.get("review_score", "-")
+                                        title = payload.get("review_comment_title", "")
+                                        prefix = f"{title} - " if title else ""
+                                        formatted.append(f"{i}. Score: {score}\n{prefix}{txt}\n")
+                                    answer = "\n".join(formatted)
+                                st.markdown(f"```text\n{answer}\n```")
+                                if results:
+                                    st.subheader("Qdrant Results (Full)")
+                                    table_rows = []
+                                    for r in results:
+                                        payload = r.get("payload") if "payload" in r else r.get("metadata", {})
+                                        table_rows.append({
+                                            "id": r.get("id"),
+                                            "score": r.get("score"),
+                                            "text": r.get("text") or payload.get("review_comment_message") or payload.get("text") or "",
+                                            **payload,
+                                        })
+                                    st.dataframe(table_rows)
+                                st.subheader("Raw JSON")
+                                st.json(data)
+                                st.session_state.messages.append({
+                                    "role": "assistant",
+                                    "content": answer,
+                                    "metadata": {"route": "qdrant"},
+                                })
+                            else:
+                                # Legacy /qdrant raw JSON
+                                st.subheader("Qdrant Raw Response")
+                                st.json(data)
+                                st.session_state.messages.append({
+                                    "role": "assistant",
+                                    "content": "Displayed Qdrant response.",
+                                    "metadata": {"route": "qdrant-legacy"},
+                                })
+                    else:
+                        st.error(f"Error: API returned status {resp.status_code}")
+                        try:
+                            st.subheader("Error Body")
+                            st.text(resp.text)
+                        except Exception:
+                            pass
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": f"Error {resp.status_code}",
+                            "metadata": None,
+                        })
+
+                else:
+                    resp = requests.post(f"{API_URL}/chat", params={"message": prompt}, timeout=60)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        answer = data.get("agent_response") or json.dumps(data)
+                        st.markdown(answer)
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": answer,
+                            "metadata": {"route": "chat"},
+                        })
+                    else:
+                        st.error(f"Error: API returned status {resp.status_code}")
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": f"Error {resp.status_code}",
+                            "metadata": None,
+                        })
+
+            except requests.exceptions.Timeout:
+                error_msg = "⏱️ Request timed out. Please try again."
+                st.error(error_msg)
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": error_msg,
+                    "metadata": None,
+                })
+            except requests.exceptions.RequestException as e:
+                error_msg = f"❌ Connection error: {str(e)}"
+                st.error(error_msg)
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": error_msg,
+                    "metadata": None,
+                })
+            except Exception as e:
+                error_msg = f"❌ Unexpected error: {str(e)}"
+                st.error(error_msg)
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": error_msg,
+                    "metadata": None,
+                })
+
+# Footer
+st.divider()
+st.markdown(
+    """
+<div style='text-align: center; color: gray;'>
+    <small>Powered by FastAPI + Qdrant + OpenAI | Deployed on GCP Cloud Run</small>
+</div>
+""",
+    unsafe_allow_html=True,
+)
