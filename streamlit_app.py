@@ -37,8 +37,8 @@ if "qdrant_agent" not in st.session_state:
     st.session_state.qdrant_agent = None
 if "rag_agent" not in st.session_state:
     st.session_state.rag_agent = None
-if "use_rag" not in st.session_state:
-    st.session_state.use_rag = False
+if "rag_initialized" not in st.session_state:
+    st.session_state.rag_initialized = False
 
 # Sidebar
 with st.sidebar:
@@ -123,49 +123,6 @@ with st.sidebar:
                         st.success("✅ Qdrant Agent initialized!")
                 except Exception as e:
                     st.error(f"Error initializing Qdrant agent: {e}")
-        
-        # RAG agent configuration
-        st.divider()
-        use_rag = st.checkbox(
-            "🎯 Use RAG Agent (Combined)",
-            value=st.session_state.use_rag,
-            help="Use RAG agent that combines SQL and vector search intelligently"
-        )
-        st.session_state.use_rag = use_rag
-        
-        if use_rag:
-            st.info("🔄 RAG agent combines both SQLite and Qdrant for comprehensive answers")
-            with st.expander("RAG Agent Config"):
-                rag_db_path = st.text_input("DB Path (RAG)", value="olist_small.db", key="rag_db")
-                rag_collection = st.text_input("Collection (RAG)", value="olist_reviews", key="rag_coll")
-                
-                if st.button("Initialize RAG Agent"):
-                    try:
-                        openai_api_key = os.getenv("OPENAI_API_KEY")
-                        qdrant_url = os.getenv("QDRANT_URL")
-                        qdrant_api_key = os.getenv("QDRANT_API_KEY")
-                        
-                        if not openai_api_key:
-                            st.error("OPENAI_API_KEY not found in environment")
-                        else:
-                            llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-                            embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-                            
-                            # Use existing agents if available
-                            st.session_state.rag_agent = create_rag_agent(
-                                db_path=rag_db_path if os.path.exists(rag_db_path) else None,
-                                collection_name=rag_collection,
-                                qdrant_url=qdrant_url,
-                                qdrant_api_key=qdrant_api_key,
-                                llm=llm,
-                                embeddings=embeddings,
-                                sqlite_agent=st.session_state.sqlite_agent,
-                                qdrant_agent=st.session_state.qdrant_agent
-                            )
-                            st.success("✅ RAG Agent initialized!")
-                            st.info("RAG agent can now query both structured data and reviews")
-                    except Exception as e:
-                        st.error(f"Error initializing RAG agent: {e}")
 
     st.divider()
     with st.expander("📡 Available Endpoints"):
@@ -181,7 +138,7 @@ with st.sidebar:
             **Agentic Mode:**
             - SQLite Agent - Intelligent SQL query generation and execution
             - Qdrant Agent - Smart vector search with metadata filtering
-            - RAG Agent - Combined retrieval and generation (SQL + Vector)
+            - RAG Agent - Auto-activated for queries needing both SQL & Vector
             """
         )
 
@@ -255,11 +212,60 @@ review_keywords = [
     "negativo",
 ]
 
+# Auto-initialize RAG agent if needed
+def init_rag_agent():
+    """Initialize RAG agent automatically if not already done"""
+    if not st.session_state.rag_initialized:
+        try:
+            openai_api_key = os.getenv("OPENAI_API_KEY")
+            qdrant_url = os.getenv("QDRANT_URL")
+            qdrant_api_key = os.getenv("QDRANT_API_KEY")
+            
+            if openai_api_key and qdrant_url:
+                llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+                embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+                
+                db_path = "olist_small.db"
+                st.session_state.rag_agent = create_rag_agent(
+                    db_path=db_path if os.path.exists(db_path) else None,
+                    collection_name="olist_reviews",
+                    qdrant_url=qdrant_url,
+                    qdrant_api_key=qdrant_api_key,
+                    llm=llm,
+                    embeddings=embeddings,
+                    sqlite_agent=st.session_state.sqlite_agent,
+                    qdrant_agent=st.session_state.qdrant_agent
+                )
+                st.session_state.rag_initialized = True
+        except Exception as e:
+            pass  # Silently fail, will fall back to API
+
+def should_use_rag(text):
+    """Determine if query needs both SQL and vector data (RAG)"""
+    has_sql = any(k in text for k in sql_keywords)
+    has_review = any(k in text for k in review_keywords)
+    
+    # Keywords that suggest combining data sources
+    combo_keywords = ["and", "with", "including", "along with", "customer", "opinion", "think", "say"]
+    has_combo = any(k in text for k in combo_keywords)
+    
+    # Use RAG if query mentions both SQL and review topics, or has combo keywords
+    return (has_sql and has_review) or (has_sql and has_combo) or (has_review and has_combo)
+
 # Chat input and handling
 if prompt := st.chat_input("Ask a question about your data..."):
     text = prompt.lower()
     route = "chat"
-    if any(k in text for k in sql_keywords):
+    use_rag = False
+    
+    # Initialize RAG agent if needed
+    init_rag_agent()
+    
+    # Determine routing
+    if should_use_rag(text) and st.session_state.rag_agent:
+        route = "rag"
+        use_rag = True
+    elif any(k in text for k in sql_keywords):
         route = "sqlite"
     elif any(k in text for k in review_keywords):
         route = "qdrant"
@@ -271,8 +277,8 @@ if prompt := st.chat_input("Ask a question about your data..."):
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             try:
-                # Check if RAG agent should be used (takes precedence)
-                if st.session_state.use_rag and st.session_state.rag_agent:
+                # Use RAG agent if query needs both SQL and vector data
+                if use_rag and st.session_state.rag_agent:
                     # Use RAG agent for comprehensive retrieval and generation
                     result = st.session_state.rag_agent.query(prompt, include_sources=True)
                     answer = result["answer"]

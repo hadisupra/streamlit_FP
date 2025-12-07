@@ -21,6 +21,7 @@ from langchain_community.vectorstores import qdrant as QdrantVectorStore
 from langgraph.prebuilt import create_react_agent
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
+from agents import create_rag_agent
 
 # load environment variables from .env file
 load_dotenv()   
@@ -352,12 +353,30 @@ def render_agent_output(text: str):
 
 # Initialize the agent if API key is available
 review_agent = None
+rag_agent = None
+
 if OPENAI_API_KEY and vector_store and llm is not None:
     # Newer create_react_agent signature does not accept 'prompt'
     review_agent = create_react_agent(
         tools=[search_reviews, current_datetime, get_review_statistics, sql_query_tool_struct],
         model=llm,
     )
+    
+    # Initialize RAG agent for queries needing both SQL and vector data
+    try:
+        db_path = "olist_small.db"
+        if os.path.exists(db_path):
+            rag_agent = create_rag_agent(
+                db_path=db_path,
+                collection_name=collection_name,
+                qdrant_url=QDRANT_URL,
+                qdrant_api_key=QDRANT_API_KEY,
+                llm=llm,
+                embeddings=embeddings
+            )
+            logger.info("RAG agent initialized successfully")
+    except Exception as e:
+        logger.warning(f"RAG agent initialization failed: {e}")
     
     def get_chat_bot_response(input_text, chat_history):
         """Get response from the chatbot agent."""
@@ -432,6 +451,26 @@ sql_keywords = [
     "group", "by", "top", "price", "category", "orders", "products"
 ]
 
+review_keywords = [
+    "review", "reviews", "rating", "comment", "feedback", "delivery",
+    "customer", "opinion", "sentiment", "satisfaction"
+]
+
+combo_keywords = [
+    "and", "with", "including", "along with", "what do", "what are",
+    "customers say", "customer think", "opinions on", "feedback on"
+]
+
+def should_use_rag(text):
+    """Determine if query needs both SQL and vector data (RAG)"""
+    text_lower = text.lower()
+    has_sql = any(k in text_lower for k in sql_keywords)
+    has_review = any(k in text_lower for k in review_keywords)
+    has_combo = any(k in text_lower for k in combo_keywords)
+    
+    # Use RAG if query mentions both SQL and review topics, or has combo keywords
+    return (has_sql and has_review) or (has_sql and has_combo) or (has_review and has_combo and has_sql)
+
 # Chat input
 if review_agent:
     if prompt_U := st.chat_input("Ask me about the reviews or products..."):
@@ -444,8 +483,34 @@ if review_agent:
             st.markdown(prompt_U)
         st.session_state.messages.append({"role": "user", "content": prompt_U})
         
+        # Check if RAG agent should be used for combined queries
+        if rag_agent and should_use_rag(prompt_U):
+            with st.chat_message("assistant"):
+                with st.spinner("Analyzing with RAG (SQL + Reviews)..."):
+                    try:
+                        result = rag_agent.query(prompt_U, include_sources=True)
+                        answer = result["answer"]
+                        render_agent_output(answer)
+                        
+                        # Show sources used
+                        if result.get("sources"):
+                            with st.expander("📚 Information Sources"):
+                                for i, source in enumerate(result["sources"], 1):
+                                    st.write(f"{i}. **Tool:** `{source['tool']}`")
+                                    if source.get("input"):
+                                        st.json(source["input"])
+                        
+                        st.session_state.messages.append({"role": "assistant", "content": answer})
+                    except Exception as e:
+                        error_msg = f"RAG Error: {e}. Falling back to standard agent."
+                        logger.error(error_msg)
+                        # Fallback to regular agent
+                        answer = get_chat_bot_response(prompt_U, chat_history)
+                        render_agent_output(answer)
+                        st.session_state.messages.append({"role": "assistant", "content": answer})
+        
         # If it looks like a SQL question, call the API directly via the sql tool
-        if any(k in prompt_U.lower() for k in sql_keywords):
+        elif any(k in prompt_U.lower() for k in sql_keywords):
             with st.chat_message("assistant"):
                 with st.spinner("Running SQL via API..."):
                     data = sql_query_api_json(prompt_U)
