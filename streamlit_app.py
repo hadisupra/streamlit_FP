@@ -29,6 +29,8 @@ if "session_id" not in st.session_state:
     st.session_state.session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 if "agent_mode" not in st.session_state:
     st.session_state.agent_mode = "auto"  # Default to auto mode
+if "pending_message" not in st.session_state:
+    st.session_state.pending_message = None
 
 # Sidebar
 with st.sidebar:
@@ -95,98 +97,108 @@ for message in st.session_state.messages:
             if "agent_choice" in metadata:
                 st.caption(f"🎯 Routed to: {metadata['agent_choice']}")
 
+# Process pending message from Quick Start buttons
+if st.session_state.pending_message:
+    prompt = st.session_state.pending_message
+    st.session_state.pending_message = None
+else:
+    prompt = None
+
 # Chat input and handling
-if prompt := st.chat_input("💭 Ask me anything about products, orders, or reviews..."):
+if not prompt:
+    prompt = st.chat_input("💭 Ask me anything about products, orders, or reviews...")
+
+if prompt:
     # Add user message
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
+    
     # Send prompt to API and render response
-    if prompt:
-        try:
-            payload = {
-                "message": prompt,
-                "agent": st.session_state.agent_mode,
-                "session_id": st.session_state.session_id,
-            }
+    try:
+        payload = {
+            "message": prompt,
+            "agent": st.session_state.agent_mode,
+            "session_id": st.session_state.session_id,
+        }
 
-            with st.chat_message("assistant"):
-                with st.spinner("🤔 Analyzing your question..."):
-                    resp = requests.post(
-                        f"{API_URL}/chat",
-                        json=payload,
-                        timeout=60,
-                        headers={"Content-Type": "application/json"},
-                    )
+        with st.chat_message("assistant"):
+            with st.spinner("🤔 Analyzing your question..."):
+                resp = requests.post(
+                    f"{API_URL}/chat",
+                    json=payload,
+                    timeout=60,
+                    headers={"Content-Type": "application/json"},
+                )
 
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        answer = data.get("agent_response", "No response received")
-                        agents_used = data.get("agents_used", [])
-                        agent_choice = data.get("agent_choice", "unknown")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    answer = data.get("agent_response", "No response received")
+                    agents_used = data.get("agents_used", [])
+                    agent_choice = data.get("agent_choice", "unknown")
 
-                        st.markdown(answer)
+                    st.markdown(answer)
 
-                        if agents_used:
-                            st.caption(f"🤖 Agents: {', '.join(agents_used)}")
-                        if agent_choice and st.session_state.agent_mode == "auto":
-                            st.caption(f"🎯 Auto-routed to: **{agent_choice.upper()}**")
+                    if agents_used:
+                        st.caption(f"🤖 Agents: {', '.join(agents_used)}")
+                    if agent_choice and st.session_state.agent_mode == "auto":
+                        st.caption(f"🎯 Auto-routed to: **{agent_choice.upper()}**")
 
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": answer,
-                            "metadata": {
-                                "agents": agents_used,
-                                "agent_choice": agent_choice,
-                                "mode": st.session_state.agent_mode,
-                            },
-                        })
-                    else:
-                        try:
-                            error_detail = resp.json()
-                            error_body = json.dumps(error_detail, indent=2)
-                            error_text = f"❌ API Error {resp.status_code}\n\n```json\n{error_body}\n```"
-                        except Exception:
-                            error_text = f"❌ API Error {resp.status_code}\n\n{resp.text}"
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": answer,
+                        "metadata": {
+                            "agents": agents_used,
+                            "agent_choice": agent_choice,
+                            "mode": st.session_state.agent_mode,
+                        },
+                    })
+                else:
+                    try:
+                        error_detail = resp.json()
+                        error_body = json.dumps(error_detail, indent=2)
+                        error_text = f"❌ API Error {resp.status_code}\n\n```json\n{error_body}\n```"
+                    except Exception:
+                        error_text = f"❌ API Error {resp.status_code}\n\n{resp.text}"
 
-                        st.error(error_text)
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": error_text,
-                            "metadata": None,
-                        })
-        except requests.exceptions.Timeout:
-            error_msg = "⏱️ **Request Timeout**\n\nThe request took too long. The API might be processing a complex query or experiencing high load. Please try again."
-            st.error(error_msg)
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": error_msg,
-                "metadata": None,
-            })
-        except requests.exceptions.ConnectionError:
-            error_msg = f"🔌 **Connection Error**\n\nCannot reach the API at `{API_URL}`\n\nPlease check:\n- API URL is correct\n- API service is running\n- Network connection"
-            st.error(error_msg)
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": error_msg,
-                "metadata": None,
-            })
-        except requests.exceptions.RequestException as e:
-            error_msg = f"❌ **Request Error**\n\n{str(e)}"
-            st.error(error_msg)
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": error_msg,
-                "metadata": None,
-            })
-        except Exception as e:
-            error_msg = f"⚠️ **Unexpected Error**\n\n{str(e)}\n\nPlease report this issue."
-            st.error(error_msg)
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": error_msg,
-                "metadata": None,
-            })
+                    st.error(error_text)
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": error_text,
+                        "metadata": None,
+                    })
+    except requests.exceptions.Timeout:
+        error_msg = "⏱️ **Request Timeout**\n\nThe request took too long. The API might be processing a complex query or experiencing high load. Please try again."
+        st.error(error_msg)
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": error_msg,
+            "metadata": None,
+        })
+    except requests.exceptions.ConnectionError:
+        error_msg = f"🔌 **Connection Error**\n\nCannot reach the API at `{API_URL}`\n\nPlease check:\n- API URL is correct\n- API service is running\n- Network connection"
+        st.error(error_msg)
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": error_msg,
+            "metadata": None,
+        })
+    except requests.exceptions.RequestException as e:
+        error_msg = f"❌ **Request Error**\n\n{str(e)}"
+        st.error(error_msg)
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": error_msg,
+            "metadata": None,
+        })
+    except Exception as e:
+        error_msg = f"⚠️ **Unexpected Error**\n\n{str(e)}\n\nPlease report this issue."
+        st.error(error_msg)
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": error_msg,
+            "metadata": None,
+        })
 
 # Footer
 st.divider()
@@ -198,26 +210,17 @@ if len(st.session_state.messages) == 0:
     
     with col1:
         if st.button("📊 Product Statistics", use_container_width=True):
-            st.session_state.messages.append({
-                "role": "user",
-                "content": "Berapa total produk yang dijual?"
-            })
+            st.session_state.pending_message = "Berapa total produk yang dijual?"
             st.rerun()
     
     with col2:
         if st.button("⭐ Review Analysis", use_container_width=True):
-            st.session_state.messages.append({
-                "role": "user",
-                "content": "Show me customer review summary for perfume products"
-            })
+            st.session_state.pending_message = "Show me customer review summary for perfume products"
             st.rerun()
     
     with col3:
         if st.button("💰 Price Analysis", use_container_width=True):
-            st.session_state.messages.append({
-                "role": "user",
-                "content": "What is the average price of products by category?"
-            })
+            st.session_state.pending_message = "What is the average price of products by category?"
             st.rerun()
 
 st.divider()
